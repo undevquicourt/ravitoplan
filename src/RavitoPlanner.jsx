@@ -47,6 +47,7 @@ export default function RavitoPlanner() {
   const [durH, setDurH] = useState("3");
   const [durM, setDurM] = useState("0");
   const [rounded, setRounded] = useState(false);
+  const [mode, setMode] = useState("simple"); // "simple" = glucides seuls · "advanced" = + électrolytes
   const [products, setProducts] = useState([
     mkProduct({ name: "Gel", carbs: "25", sodium: "40", potassium: "10", magnesium: "3", calcium: "0", qty: "4" }),
     mkProduct({ name: "Barre", carbs: "40", sodium: "60", potassium: "40", magnesium: "10", calcium: "20", qty: "2" }),
@@ -59,6 +60,12 @@ export default function RavitoPlanner() {
   const removeProduct = (id) => setProducts((p) => p.filter((x) => x.id !== id));
   const patch = (id, key, val) => setProducts((p) => p.map((x) => (x.id === id ? { ...x, [key]: val } : x)));
   const setTarget = (key, val) => setTargets((t) => ({ ...t, [key]: val }));
+
+  // Affichage : le mode simplifié ne montre que les glucides, le mode avancé ajoute
+  // les électrolytes. Les calculs (base/plan) restent inchangés dans les deux modes.
+  const showElectro = mode === "advanced";
+  const visibleNutrients = showElectro ? NUTRIENTS : NUTRIENTS.filter((n) => n.key === "carbs");
+  const cols = (n) => ({ gridTemplateColumns: `repeat(${n}, minmax(0, 1fr))` });
 
   /* ---------- Base : intervalle + séquence pilotés par les glucides ---------- */
   const base = useMemo(() => {
@@ -203,18 +210,28 @@ export default function RavitoPlanner() {
             Un seul intervalle. Le bon ordre.
           </h1>
           <p className="mt-2 text-sm" style={{ color: C.muted }}>
-            Glucides et électrolytes. Les glucides fixent la cadence ; on vérifie
-            la couverture de chaque nutriment sur la durée d'effort.
+            {showElectro
+              ? "Glucides et électrolytes. Les glucides fixent la cadence ; on vérifie la couverture de chaque nutriment sur la durée d'effort."
+              : "Les glucides fixent la cadence : un seul intervalle, dans le bon ordre."}
           </p>
         </header>
+
+        {/* Sélecteur de mode */}
+        <div className="flex flex-wrap items-center gap-2 mb-4">
+          <Seg active={mode === "simple"} onClick={() => setMode("simple")}>Simplifié</Seg>
+          <Seg active={mode === "advanced"} onClick={() => setMode("advanced")}>Avancé</Seg>
+          <span className="font-mono text-[11px] ml-1" style={{ color: C.muted }}>
+            {showElectro ? "glucides + électrolytes" : "glucides seuls"}
+          </span>
+        </div>
 
         {/* Cibles par nutriment */}
         <section className="rounded-xl border p-4 mb-3" style={{ background: C.panel, borderColor: C.line }}>
           <div className="font-mono text-xs tracking-[0.2em] uppercase mb-3" style={{ color: C.muted }}>
             Cibles par heure
           </div>
-          <div className="grid grid-cols-5 gap-2">
-            {NUTRIENTS.map((n) => (
+          <div className="grid gap-2" style={cols(visibleNutrients.length)}>
+            {visibleNutrients.map((n) => (
               <label key={n.key} className="flex flex-col min-w-0">
                 <span className="font-mono text-[11px] mb-1 truncate" style={{ color: n.color }}>
                   {n.short} <span style={{ color: C.muted }}>{n.unit}/h</span>
@@ -253,7 +270,7 @@ export default function RavitoPlanner() {
           </div>
           {/* Légende couleurs */}
           <div className="flex flex-wrap gap-x-3 gap-y-1 mb-3">
-            {NUTRIENTS.map((n) => (
+            {visibleNutrients.map((n) => (
               <span key={n.key} className="inline-flex items-center gap-1.5 text-[11px]" style={{ color: C.muted }}>
                 <span className="inline-block w-2 h-2 rounded-full" style={{ background: n.color }} />
                 {n.label} <span className="font-mono">({n.unit})</span>
@@ -274,7 +291,7 @@ export default function RavitoPlanner() {
                       className="flex-1 min-w-0 rounded-lg px-3 py-2 text-sm outline-none"
                       style={{ background: C.ink, color: C.text }}
                     />
-                    {onlyElectro && (
+                    {showElectro && onlyElectro && (
                       <span className="inline-flex items-center gap-1 text-[10px] font-mono uppercase tracking-wider px-1.5 py-1 rounded" style={{ color: C.ideal, background: C.ink }}>
                         <Zap size={11} /> élec.
                       </span>
@@ -298,8 +315,8 @@ export default function RavitoPlanner() {
                       <Trash2 size={16} />
                     </button>
                   </div>
-                  <div className="grid grid-cols-5 gap-1.5">
-                    {NUTRIENTS.map((n) => (
+                  <div className="grid gap-1.5" style={cols(visibleNutrients.length)}>
+                    {visibleNutrients.map((n) => (
                       <label key={n.key} className="flex flex-col min-w-0">
                         <span className="font-mono text-[10px] mb-0.5 truncate" style={{ color: n.color }}>{n.short}</span>
                         <input
@@ -359,9 +376,11 @@ export default function RavitoPlanner() {
                 Couverture sur {fmtClock(base.durMin)}
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {plan.coverage.map((c) => (
-                  <Coverage key={c.key} c={c} />
-                ))}
+                {plan.coverage
+                  .filter((c) => showElectro || c.key === "carbs")
+                  .map((c) => (
+                    <Coverage key={c.key} c={c} />
+                  ))}
               </div>
             </div>
 
@@ -424,7 +443,7 @@ export default function RavitoPlanner() {
             </div>
 
             {/* Compléments électrolytes */}
-            {base.complements.length > 0 && (
+            {showElectro && base.complements.length > 0 && (
               <div className="rounded-xl border mt-3 overflow-hidden" style={{ background: C.panel, borderColor: C.line }}>
                 <div className="flex items-center gap-2 px-4 py-3 border-b" style={{ borderColor: C.line }}>
                   <Zap size={14} style={{ color: C.ideal }} />
