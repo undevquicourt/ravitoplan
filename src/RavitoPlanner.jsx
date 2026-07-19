@@ -39,8 +39,13 @@ const round1 = (x) => Math.round(x * 10) / 10;
 const fmtClock = (min) => { const h = Math.floor(min / 60); const m = Math.round(min % 60); return `${h}:${String(m).padStart(2, "0")}`; };
 const electroSum = (p) => ELEC.reduce((s, n) => s + num(p[n.key]), 0);
 
+// Sodium : canonique interne en mg. En mode "salt", la valeur saisie est en g de
+// sel (NaCl) et convertie au calcul. 1 g de sel ≈ 393 mg de sodium.
+const SALT_TO_NA = 393;
+const sodiumMg = (p) => (p.sodiumMode === "salt" ? num(p.sodium) * SALT_TO_NA : num(p.sodium));
+
 const defaultTargets = Object.fromEntries(NUTRIENTS.map((n) => [n.key, n.def]));
-const mkProduct = (o) => ({ id: uid(), name: "", carbs: "", sodium: "", potassium: "", magnesium: "", calcium: "", qty: "1", ...o });
+const mkProduct = (o) => ({ id: uid(), name: "", carbs: "", sodium: "", potassium: "", magnesium: "", calcium: "", qty: "1", sodiumMode: "na", ...o });
 
 export default function RavitoPlanner() {
   const [targets, setTargets] = useState(defaultTargets);
@@ -77,7 +82,7 @@ export default function RavitoPlanner() {
     const allUnits = [];
     products.forEach((p) => {
       const q = int(p.qty);
-      const profile = Object.fromEntries(NUTRIENTS.map((n) => [n.key, num(p[n.key])]));
+      const profile = Object.fromEntries(NUTRIENTS.map((n) => [n.key, n.key === "sodium" ? sodiumMg(p) : num(p[n.key])]));
       for (let i = 0; i < q; i++) allUnits.push({ id: `${p.id}#${i}`, name: p.name.trim() || "Produit", ...profile });
     });
     const carbUnits = allUnits.filter((u) => u.carbs > 0);
@@ -124,7 +129,7 @@ export default function RavitoPlanner() {
       .map((p) => ({
         id: p.id, name: p.name.trim() || "Produit", qty: int(p.qty),
         spacing: durMin / int(p.qty),
-        profile: Object.fromEntries(ELEC.map((n) => [n.key, num(p[n.key])])),
+        profile: Object.fromEntries(ELEC.map((n) => [n.key, n.key === "sodium" ? sodiumMg(p) : num(p[n.key])])),
       }));
 
     const sig = JSON.stringify({
@@ -277,6 +282,11 @@ export default function RavitoPlanner() {
               </span>
             ))}
           </div>
+          {showElectro && (
+            <div className="text-[11px] mb-3 -mt-1" style={{ color: C.muted }}>
+              Sel (g) → sodium : ×393. Cibles exprimées en mg de sodium.
+            </div>
+          )}
 
           <div className="flex flex-col gap-2">
             {products.map((p) => {
@@ -316,19 +326,41 @@ export default function RavitoPlanner() {
                     </button>
                   </div>
                   <div className="grid gap-1.5" style={cols(visibleNutrients.length)}>
-                    {visibleNutrients.map((n) => (
-                      <label key={n.key} className="flex flex-col min-w-0">
-                        <span className="font-mono text-[10px] mb-0.5 truncate" style={{ color: n.color }}>{n.short}</span>
-                        <input
-                          value={p[n.key]}
-                          onChange={(e) => patch(p.id, n.key, e.target.value)}
-                          inputMode="decimal"
-                          placeholder="0"
-                          className="w-full rounded-md px-1.5 py-1.5 text-sm text-center font-mono outline-none min-w-0"
-                          style={{ background: C.ink, color: C.text }}
-                        />
-                      </label>
-                    ))}
+                    {visibleNutrients.map((n) => {
+                      const isSodium = n.key === "sodium";
+                      const salt = isSodium && p.sodiumMode === "salt";
+                      const Wrap = isSodium ? "div" : "label";
+                      return (
+                        <Wrap key={n.key} className="flex flex-col min-w-0">
+                          {isSodium ? (
+                            <button
+                              type="button"
+                              onClick={() => patch(p.id, "sodiumMode", salt ? "na" : "salt")}
+                              className="font-mono text-[10px] mb-0.5 truncate text-left underline decoration-dotted underline-offset-2 outline-none"
+                              style={{ color: n.color }}
+                              title="Basculer Na (mg) ⇄ Sel (g)"
+                            >
+                              {salt ? "Sel g" : "Na mg"}
+                            </button>
+                          ) : (
+                            <span className="font-mono text-[10px] mb-0.5 truncate" style={{ color: n.color }}>{n.short}</span>
+                          )}
+                          <input
+                            value={p[n.key]}
+                            onChange={(e) => patch(p.id, n.key, e.target.value)}
+                            inputMode="decimal"
+                            placeholder="0"
+                            className="w-full rounded-md px-1.5 py-1.5 text-sm text-center font-mono outline-none min-w-0"
+                            style={{ background: C.ink, color: C.text }}
+                          />
+                          {salt && (
+                            <span className="font-mono text-[9px] mt-0.5 text-center" style={{ color: C.muted }}>
+                              ≈ {round1(num(p.sodium) * SALT_TO_NA)} mg Na
+                            </span>
+                          )}
+                        </Wrap>
+                      );
+                    })}
                   </div>
                 </div>
               );
