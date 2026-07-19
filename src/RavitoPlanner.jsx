@@ -5,6 +5,7 @@ import {
 import {
   Plus, Trash2, Flame, Clock, AlertTriangle, Check, Timer,
   ChevronUp, ChevronDown, RotateCcw, Zap,
+  Copy, X, HelpCircle, ChevronLeft, ChevronRight,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ *
@@ -37,6 +38,8 @@ const num = (v) => { const n = parseFloat(String(v).replace(",", ".")); return N
 const int = (v) => Math.max(0, Math.round(num(v)));
 const round1 = (x) => Math.round(x * 10) / 10;
 const fmtClock = (min) => { const h = Math.floor(min / 60); const m = Math.round(min % 60); return `${h}:${String(m).padStart(2, "0")}`; };
+const fmtDur = (min) => { const h = Math.floor(min / 60); const m = Math.round(min % 60); return `${h}h${String(m).padStart(2, "0")}`; };
+const ROWS_PER_PAGE = 8; // lignes de séquence par page dans la carte de capture
 const electroSum = (p) => ELEC.reduce((s, n) => s + num(p[n.key]), 0);
 
 // Sodium : canonique interne en mg. En mode "salt", la valeur saisie est en g de
@@ -60,6 +63,10 @@ export default function RavitoPlanner() {
     mkProduct({ name: "Capsule de sel", carbs: "0", sodium: "300", potassium: "40", magnesium: "25", calcium: "10", qty: "3" }),
   ]);
   const [manual, setManual] = useState({ sig: null, ids: null });
+  const [showMethod, setShowMethod] = useState(false);
+  const [shareTitle, setShareTitle] = useState(null); // null → titre par défaut (dérivé de durée/cible)
+  const [page, setPage] = useState(0);
+  const [copied, setCopied] = useState(false);
 
   const addProduct = () => setProducts((p) => [...p, mkProduct({ name: "" })]);
   const removeProduct = (id) => setProducts((p) => p.filter((x) => x.id !== id));
@@ -204,21 +211,85 @@ export default function RavitoPlanner() {
   };
   const resetOrder = () => setManual({ sig: null, ids: null });
 
+  /* ---------- Export / capture ---------- */
+  const share = base.invalid
+    ? null
+    : (() => {
+        const rows = plan.rows;
+        const pageCount = Math.max(1, Math.ceil(rows.length / ROWS_PER_PAGE));
+        const safePage = Math.min(Math.max(0, page), pageCount - 1);
+        return {
+          rows,
+          pageCount,
+          safePage,
+          pageRows: rows.slice(safePage * ROWS_PER_PAGE, (safePage + 1) * ROWS_PER_PAGE),
+          isLast: safePage === pageCount - 1,
+          defaultTitle: `Ravito — ${fmtDur(base.durMin)} · ${round1(base.cible)} g/h`,
+        };
+      })();
+  const effTitle = share ? ((shareTitle ?? "").trim() || share.defaultTitle) : "";
+
+  const buildPlanText = () => {
+    if (base.invalid) return "";
+    const L = [];
+    L.push(`Ravito — ${fmtDur(base.durMin)} · ${round1(base.cible)} g/h glucides`);
+    L.push(`1 dose toutes les ${round1(base.T)} min`);
+    L.push("", "Sequence");
+    plan.rows.forEach((r) => L.push(`${r.num} · ${fmtClock(r.atMin)} · ${r.name} (+${round1(r.carbs)} g)`));
+    if (showElectro && base.complements.length > 0) {
+      L.push("", "Complements electrolytes");
+      base.complements.forEach((c) => L.push(`- ${c.name} x${c.qty} · 1 / ${round1(c.spacing)} min`));
+    }
+    L.push("", `Couverture (${fmtDur(base.durMin)})`);
+    plan.coverage
+      .filter((c) => showElectro || c.key === "carbs")
+      .forEach((c) => {
+        const status = c.met ? "OK" : String(round1(c.delta));
+        L.push(`${c.label.padEnd(10)}${String(round1(c.rate)).padStart(4)} / ${round1(c.target)} ${c.unit}/h  ${status}`);
+      });
+    return L.join("\n");
+  };
+
+  const doCopy = async () => {
+    const text = buildPlanText();
+    try {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+      else throw new Error("clipboard indisponible");
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); } catch { /* no-op */ }
+      document.body.removeChild(ta);
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
   return (
     <div style={{ background: C.ink, color: C.text }} className="min-h-screen w-full">
+      {showMethod && <MethodPanel onClose={() => setShowMethod(false)} />}
       <div className="mx-auto max-w-3xl px-4 py-8 sm:py-10">
-        <header className="mb-7">
+        <header className="mb-5">
           <div className="font-mono text-xs tracking-[0.25em] uppercase mb-2" style={{ color: C.muted }}>
             Plan de ravitaillement
           </div>
-          <h1 className="text-3xl sm:text-4xl font-semibold leading-tight">
-            Un seul intervalle. Le bon ordre.
-          </h1>
-          <p className="mt-2 text-sm" style={{ color: C.muted }}>
-            {showElectro
-              ? "Glucides et électrolytes. Les glucides fixent la cadence ; on vérifie la couverture de chaque nutriment sur la durée d'effort."
-              : "Les glucides fixent la cadence : un seul intervalle, dans le bon ordre."}
+          <h1 className="text-4xl sm:text-5xl font-semibold leading-tight">Ravito</h1>
+          <p className="mt-2 text-lg font-medium">Ton plan de nutrition pour l'effort.</p>
+          <p className="mt-1 text-sm" style={{ color: C.muted }}>
+            Combien de glucides et d'électrolytes emporter, et à quel rythme les
+            prendre — sans te prendre la tête pendant la course.
           </p>
+          <button
+            onClick={() => setShowMethod(true)}
+            className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium rounded-lg px-2.5 py-1.5 border"
+            style={{ borderColor: C.line, color: C.ideal }}
+          >
+            <HelpCircle size={14} /> Comment ça marche ?
+          </button>
         </header>
 
         {/* Sélecteur de mode */}
@@ -495,6 +566,125 @@ export default function RavitoPlanner() {
                 </div>
               </div>
             )}
+
+            {/* Partager mon plan : export texte + carte de capture */}
+            <section className="mt-6">
+              <div className="font-mono text-xs tracking-[0.2em] uppercase mb-3" style={{ color: C.muted }}>
+                Partager mon plan
+              </div>
+
+              {/* Export texte */}
+              <button
+                onClick={doCopy}
+                className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium border mb-4 transition-colors"
+                style={{ borderColor: copied ? C.good : C.line, color: copied ? C.good : C.text }}
+              >
+                {copied ? <Check size={16} /> : <Copy size={16} />}
+                {copied ? "Copié !" : "Copier le plan"}
+              </button>
+
+              {/* Carte optimisée pour le screenshot (largeur fixe façon mobile) */}
+              <div className="max-w-sm mx-auto rounded-2xl border p-4" style={{ background: C.panel, borderColor: C.line }}>
+                <div className="flex items-center gap-2 mb-3">
+                  <input
+                    value={shareTitle ?? ""}
+                    onChange={(e) => setShareTitle(e.target.value)}
+                    placeholder={share.defaultTitle}
+                    aria-label="Titre du plan"
+                    className="flex-1 min-w-0 bg-transparent text-sm font-semibold outline-none"
+                    style={{ color: C.text }}
+                  />
+                  {share.pageCount > 1 && (
+                    <span className="font-mono text-[11px] shrink-0" style={{ color: C.muted }}>
+                      {share.safePage + 1}/{share.pageCount}
+                    </span>
+                  )}
+                </div>
+
+                {/* Stats compactes, répétées sur chaque page */}
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mb-3 pb-3 border-b" style={{ borderColor: C.line }}>
+                  <span className="font-mono text-xs" style={{ color: NUTRIENTS[0].color }}>1 / {round1(base.T)} min</span>
+                  <span className="font-mono text-xs" style={{ color: C.muted }}>{fmtDur(base.durMin)}</span>
+                  <span className="font-mono text-xs" style={{ color: NUTRIENTS[0].color }}>{round1(base.cible)} g/h</span>
+                  {showElectro && plan.coverage.filter((c) => c.key !== "carbs").map((c) => (
+                    <span key={c.key} className="inline-flex items-center gap-1 font-mono text-[11px]" style={{ color: C.muted }}>
+                      <span className="inline-block w-2 h-2 rounded-full" style={{ background: c.color }} />
+                      {round1(c.target)}{c.unit}
+                    </span>
+                  ))}
+                </div>
+
+                {/* Séquence paginée, sans aucune commande */}
+                <ol className="flex flex-col gap-1.5">
+                  {share.pageRows.map((r) => (
+                    <li key={r.id} className="flex items-center gap-2">
+                      <span className="w-5 h-5 shrink-0 grid place-items-center rounded-full font-mono text-[11px]" style={{ background: C.panel2, color: C.muted }}>{r.num}</span>
+                      <span className="font-mono text-xs w-10 shrink-0" style={{ color: C.ideal }}>{fmtClock(r.atMin)}</span>
+                      <span className="flex-1 min-w-0 text-sm truncate">{r.name}</span>
+                      <span className="font-mono text-xs shrink-0" style={{ color: NUTRIENTS[0].color }}>+{round1(r.carbs)} g</span>
+                    </li>
+                  ))}
+                </ol>
+
+                {/* Dernière page : compléments + couverture condensée */}
+                {share.isLast && (
+                  <div className="mt-3 pt-3 border-t" style={{ borderColor: C.line }}>
+                    {showElectro && base.complements.length > 0 && (
+                      <div className="mb-3">
+                        <div className="font-mono text-[10px] tracking-wider uppercase mb-1" style={{ color: C.muted }}>Compléments</div>
+                        {base.complements.map((c) => (
+                          <div key={c.id} className="flex items-center gap-2 text-xs">
+                            <span className="flex-1 min-w-0 truncate">{c.name} ×{c.qty}</span>
+                            <span className="font-mono shrink-0" style={{ color: C.ideal }}>1 / {round1(c.spacing)} min</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="font-mono text-[10px] tracking-wider uppercase mb-1" style={{ color: C.muted }}>Couverture</div>
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+                      {plan.coverage.filter((c) => showElectro || c.key === "carbs").map((c) => (
+                        <div key={c.key} className="flex items-center justify-between gap-1 text-xs">
+                          <span className="inline-flex items-center gap-1 min-w-0">
+                            <span className="inline-block w-1.5 h-1.5 rounded-full shrink-0" style={{ background: c.color }} />
+                            <span className="truncate">{c.short}</span>
+                          </span>
+                          <span className="font-mono shrink-0" style={{ color: c.met ? C.good : C.bad }}>{round1(c.rate)}/{round1(c.target)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Contrôles de pagination — hors de la carte pour ne pas polluer la capture */}
+              {share.pageCount > 1 && (
+                <div className="max-w-sm mx-auto flex items-center justify-center gap-4 mt-3">
+                  <button
+                    onClick={() => setPage(Math.max(0, share.safePage - 1))}
+                    disabled={share.safePage === 0}
+                    className="grid place-items-center w-9 h-9 rounded-lg border"
+                    style={{ borderColor: C.line, color: share.safePage === 0 ? C.line : C.text }}
+                    aria-label="Page précédente"
+                  >
+                    <ChevronLeft size={18} />
+                  </button>
+                  <span className="font-mono text-xs" style={{ color: C.muted }}>{share.safePage + 1} / {share.pageCount}</span>
+                  <button
+                    onClick={() => setPage(Math.min(share.pageCount - 1, share.safePage + 1))}
+                    disabled={share.isLast}
+                    className="grid place-items-center w-9 h-9 rounded-lg border"
+                    style={{ borderColor: C.line, color: share.isLast ? C.line : C.text }}
+                    aria-label="Page suivante"
+                  >
+                    <ChevronRight size={18} />
+                  </button>
+                </div>
+              )}
+
+              <div className="max-w-sm mx-auto mt-2 text-center text-[11px]" style={{ color: C.muted }}>
+                Fais une capture d'écran de la carte pour la partager.
+              </div>
+            </section>
           </section>
         )}
 
@@ -507,6 +697,69 @@ export default function RavitoPlanner() {
 }
 
 /* --------------------------------- UI --------------------------------- */
+
+const METHOD_STEPS = [
+  {
+    t: "Un débit de glucides (g/h)",
+    d: "Ton corps n'absorbe qu'une quantité limitée de glucides par heure. Viser une cible régulière évite la fringale — le fameux « mur ».",
+  },
+  {
+    t: "Un seul intervalle",
+    d: "Une règle simple à tenir en course : une prise toutes les X minutes. Aucun calcul à faire pendant l'effort.",
+  },
+  {
+    t: "L'ordre compte",
+    d: "Tes produits n'ont pas tous le même apport. On les ordonne pour lisser l'absorption, au lieu d'alterner pics et creux.",
+  },
+  {
+    t: "Les électrolytes, surtout le sodium",
+    d: "On transpire du sel ; un déficit favorise crampes et baisse de perf. Astuce étiquette : Sel (g) × 393 = sodium (mg).",
+  },
+  {
+    t: "Lire la couverture",
+    d: "Chaque nutriment affiche le débit obtenu face à ta cible. En rouge si tu es court.",
+  },
+];
+
+function MethodPanel({ onClose }) {
+  return (
+    <div className="fixed inset-0 z-50 overflow-y-auto" style={{ background: "rgba(8,12,18,0.94)" }}>
+      <div className="mx-auto max-w-2xl px-4 py-8 sm:py-12">
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-2xl font-semibold">Comment ça marche&nbsp;?</h2>
+          <button
+            onClick={onClose}
+            className="grid place-items-center w-9 h-9 rounded-lg border shrink-0"
+            style={{ borderColor: C.line, color: C.text }}
+            aria-label="Fermer"
+          >
+            <X size={18} />
+          </button>
+        </div>
+        <ol className="flex flex-col gap-3">
+          {METHOD_STEPS.map((s, i) => (
+            <li key={i} className="rounded-xl border p-4" style={{ background: C.panel, borderColor: C.line }}>
+              <div className="flex items-baseline gap-3">
+                <span className="font-mono text-lg font-semibold shrink-0" style={{ color: NUTRIENTS[0].color }}>{i + 1}</span>
+                <div>
+                  <div className="text-base font-medium mb-1">{s.t}</div>
+                  <div className="text-sm leading-relaxed" style={{ color: C.muted }}>{s.d}</div>
+                </div>
+              </div>
+            </li>
+          ))}
+        </ol>
+        <button
+          onClick={onClose}
+          className="mt-6 inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium border"
+          style={{ borderColor: C.line, color: C.text }}
+        >
+          Fermer
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function BigInput({ value, onChange, width }) {
   return (
