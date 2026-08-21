@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
@@ -6,6 +6,7 @@ import {
   Plus, Trash2, Flame, Clock, AlertTriangle, Check, Timer,
   ChevronUp, ChevronDown, RotateCcw, Zap,
   Copy, X, HelpCircle, ChevronLeft, ChevronRight,
+  GripVertical, Save, FolderOpen,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ *
@@ -50,6 +51,25 @@ const sodiumMg = (p) => (p.sodiumMode === "salt" ? num(p.sodium) * SALT_TO_NA : 
 const defaultTargets = Object.fromEntries(NUTRIENTS.map((n) => [n.key, n.def]));
 const mkProduct = (o) => ({ id: uid(), name: "", carbs: "", sodium: "", potassium: "", magnesium: "", calcium: "", qty: "1", sodiumMode: "na", ...o });
 
+// Plans sauvegardés (localStorage). Toute lecture/écriture est protégée : le
+// stockage peut être indisponible (navigation privée, quota, accès bloqué).
+const STORAGE_KEY = "ravito.plans.v1";
+const loadPlans = () => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+};
+const persistPlans = (plans) => {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(plans)); return true; }
+  catch { return false; }
+};
+const fmtSaved = (ts) => {
+  try { return new Date(ts).toLocaleString("fr-FR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }); }
+  catch { return ""; }
+};
+
 export default function RavitoPlanner() {
   const [targets, setTargets] = useState(defaultTargets);
   const [durH, setDurH] = useState("3");
@@ -67,6 +87,14 @@ export default function RavitoPlanner() {
   const [shareTitle, setShareTitle] = useState(null); // null → titre par défaut (dérivé de durée/cible)
   const [page, setPage] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [dragId, setDragId] = useState(null);
+  const [savedPlans, setSavedPlans] = useState(() => loadPlans());
+  const [saveOpen, setSaveOpen] = useState(false);
+  const [restoreOpen, setRestoreOpen] = useState(false);
+  const [planName, setPlanName] = useState("");
+  const [storageError, setStorageError] = useState("");
+  const rowRefs = useRef({});
+  const dragRef = useRef(null);
 
   const addProduct = () => setProducts((p) => [...p, mkProduct({ name: "" })]);
   const removeProduct = (id) => setProducts((p) => p.filter((x) => x.id !== id));
@@ -211,6 +239,65 @@ export default function RavitoPlanner() {
   };
   const resetOrder = () => setManual({ sig: null, ids: null });
 
+  /* ---------- Réordonnancement par glisser-déposer (souris + tactile) ---------- */
+  const onDragStart = (e, id) => {
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* no-op */ }
+    dragRef.current = { id, pointerId: e.pointerId };
+    setDragId(id);
+  };
+  const onDragMove = (e) => {
+    const ds = dragRef.current;
+    if (!ds || e.pointerId !== ds.pointerId) return;
+    const y = e.clientY;
+    const ids = effectiveIds;
+    // Position cible = nombre d'autres lignes dont le milieu est au-dessus du pointeur.
+    let idx = 0;
+    for (const id of ids) {
+      if (id === ds.id) continue;
+      const el = rowRefs.current[id];
+      if (!el) continue;
+      const r = el.getBoundingClientRect();
+      if (y > r.top + r.height / 2) idx++;
+    }
+    const others = ids.filter((id) => id !== ds.id);
+    others.splice(idx, 0, ds.id);
+    if (others.some((id, i) => id !== ids[i])) setManual({ sig: base.sig, ids: others });
+  };
+  const onDragEnd = (e) => {
+    const ds = dragRef.current;
+    if (ds) { try { e.currentTarget.releasePointerCapture(ds.pointerId); } catch { /* no-op */ } }
+    dragRef.current = null;
+    setDragId(null);
+  };
+
+  /* ---------- Plans : sauvegarde / restauration (localStorage) ---------- */
+  const savePlan = () => {
+    const name = planName.trim() || (base.invalid ? "Plan" : `Ravito — ${fmtDur(base.durMin)} · ${round1(base.cible)} g/h`);
+    const snapshot = {
+      id: uid(), name, savedAt: Date.now(),
+      state: { targets, durH, durM, rounded, mode, products, manual },
+    };
+    const next = [snapshot, ...savedPlans];
+    if (persistPlans(next)) { setSavedPlans(next); setPlanName(""); setSaveOpen(false); setStorageError(""); }
+    else setStorageError("Sauvegarde impossible (stockage indisponible sur ce navigateur).");
+  };
+  const restorePlan = (plan) => {
+    const s = plan?.state || {};
+    if (s.targets) setTargets(s.targets);
+    if (s.durH != null) setDurH(s.durH);
+    if (s.durM != null) setDurM(s.durM);
+    if (typeof s.rounded === "boolean") setRounded(s.rounded);
+    if (s.mode) setMode(s.mode);
+    if (Array.isArray(s.products)) setProducts(s.products);
+    setManual(s.manual?.ids ? s.manual : { sig: null, ids: null });
+    setRestoreOpen(false);
+  };
+  const deletePlan = (id) => {
+    const next = savedPlans.filter((p) => p.id !== id);
+    setSavedPlans(next);
+    persistPlans(next);
+  };
+
   /* ---------- Export / capture ---------- */
   const share = base.invalid
     ? null
@@ -300,6 +387,78 @@ export default function RavitoPlanner() {
             {showElectro ? "glucides + électrolytes" : "glucides seuls"}
           </span>
         </div>
+
+        {/* Plans enregistrés (localStorage) */}
+        <div className="flex flex-wrap items-center gap-2 mb-4">
+          <button
+            onClick={() => { setSaveOpen((o) => !o); setRestoreOpen(false); setStorageError(""); }}
+            className="inline-flex items-center gap-1.5 text-xs font-medium rounded-lg px-2.5 py-1.5 border"
+            style={{ borderColor: C.line, color: C.text }}
+          >
+            <Save size={14} /> Sauvegarder
+          </button>
+          <button
+            onClick={() => { setRestoreOpen((o) => !o); setSaveOpen(false); setSavedPlans(loadPlans()); }}
+            className="inline-flex items-center gap-1.5 text-xs font-medium rounded-lg px-2.5 py-1.5 border"
+            style={{ borderColor: C.line, color: C.text }}
+          >
+            <FolderOpen size={14} /> Restaurer{savedPlans.length ? ` (${savedPlans.length})` : ""}
+          </button>
+        </div>
+
+        {saveOpen && (
+          <div className="rounded-xl border p-3 mb-4" style={{ background: C.panel, borderColor: C.line }}>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                value={planName}
+                onChange={(e) => setPlanName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") savePlan(); }}
+                placeholder="Nom du plan (ex. Marathon, sortie longue…)"
+                className="flex-1 min-w-[12rem] rounded-lg px-3 py-2 text-sm outline-none"
+                style={{ background: C.panel2, color: C.text }}
+              />
+              <button
+                onClick={savePlan}
+                className="inline-flex items-center gap-1.5 text-sm font-medium rounded-lg px-3 py-2 border"
+                style={{ borderColor: C.good, color: C.good }}
+              >
+                <Check size={15} /> Enregistrer
+              </button>
+            </div>
+            {storageError && <p className="mt-2 text-xs" style={{ color: C.bad }}>{storageError}</p>}
+          </div>
+        )}
+
+        {restoreOpen && (
+          <div className="rounded-xl border mb-4 overflow-hidden" style={{ background: C.panel, borderColor: C.line }}>
+            {savedPlans.length === 0 ? (
+              <div className="px-4 py-4 text-sm text-center" style={{ color: C.muted }}>
+                Aucun plan enregistré pour l'instant.
+              </div>
+            ) : (
+              <ul>
+                {savedPlans.map((pl) => (
+                  <li key={pl.id} className="flex items-center gap-2 px-3 sm:px-4 py-2.5 border-b last:border-b-0" style={{ borderColor: C.line }}>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm truncate">{pl.name}</div>
+                      <div className="font-mono text-[11px]" style={{ color: C.muted }}>{fmtSaved(pl.savedAt)}</div>
+                    </div>
+                    <button
+                      onClick={() => restorePlan(pl)}
+                      className="inline-flex items-center gap-1.5 text-xs font-medium rounded-lg px-2.5 py-1.5 border shrink-0"
+                      style={{ borderColor: C.line, color: C.ideal }}
+                    >
+                      <RotateCcw size={13} /> Restaurer
+                    </button>
+                    <button onClick={() => deletePlan(pl.id)} className="w-8 h-8 grid place-items-center rounded-lg shrink-0" style={{ color: C.muted }} aria-label="Supprimer le plan">
+                      <Trash2 size={15} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
 
         {/* Cibles par nutriment */}
         <section className="rounded-xl border p-4 mb-3" style={{ background: C.panel, borderColor: C.line }}>
@@ -524,9 +683,31 @@ export default function RavitoPlanner() {
                   </button>
                 )}
               </div>
-              <ol>
+              <ol style={{ userSelect: dragId ? "none" : "auto" }}>
                 {plan.rows.map((r, i) => (
-                  <li key={r.id} className="flex items-center gap-2 px-3 sm:px-4 py-2.5 border-b last:border-b-0" style={{ borderColor: C.line }}>
+                  <li
+                    key={r.id}
+                    ref={(el) => { if (el) rowRefs.current[r.id] = el; else delete rowRefs.current[r.id]; }}
+                    className="flex items-center gap-2 px-2 sm:px-3 py-2.5 border-b last:border-b-0 transition-colors"
+                    style={{
+                      borderColor: C.line,
+                      background: dragId === r.id ? C.panel2 : "transparent",
+                      boxShadow: dragId === r.id ? `inset 3px 0 0 ${NUTRIENTS[0].color}` : "none",
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onPointerDown={(e) => onDragStart(e, r.id)}
+                      onPointerMove={onDragMove}
+                      onPointerUp={onDragEnd}
+                      onPointerCancel={onDragEnd}
+                      className="grid place-items-center shrink-0 h-8 w-6 cursor-grab"
+                      style={{ color: dragId === r.id ? C.text : C.muted, touchAction: "none" }}
+                      aria-label="Glisser pour réordonner la dose"
+                      title="Glisser pour réordonner"
+                    >
+                      <GripVertical size={16} />
+                    </button>
                     <span className="w-6 h-6 shrink-0 grid place-items-center rounded-full font-mono text-xs" style={{ background: C.panel2, color: C.muted }}>{r.num}</span>
                     <span className="font-mono text-sm w-12 shrink-0" style={{ color: C.ideal }}>{fmtClock(r.atMin)}</span>
                     <span className="flex-1 min-w-0 text-sm truncate">{r.name}</span>
@@ -538,6 +719,11 @@ export default function RavitoPlanner() {
                   </li>
                 ))}
               </ol>
+              {plan.rows.length > 1 && (
+                <div className="px-4 py-2 text-[11px] font-mono border-t" style={{ color: C.muted, borderColor: C.line }}>
+                  Glisse la poignée ⠿ ou utilise les flèches pour réordonner.
+                </div>
+              )}
               {base.carbSurplus.length > 0 && (
                 <div className="px-4 py-3 text-xs font-mono" style={{ color: C.muted }}>
                   Réserve : {base.carbSurplus.length} dose{base.carbSurplus.length > 1 ? "s" : ""} glucidique{base.carbSurplus.length > 1 ? "s" : ""} non programmée{base.carbSurplus.length > 1 ? "s" : ""}.
